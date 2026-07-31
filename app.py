@@ -1,20 +1,29 @@
 import os
 import pickle
-import numpy as np
+import sys
 import pandas as pd
 from flask import Flask, render_template_string, request
 
 app = Flask(__name__)
 
-# Load Model
+# Model loading with robust exception handling to prevent startup crashes
 MODEL_PATH = "Supperstore_model.pkl"
 model = None
+model_error = None
 
 if os.path.exists(MODEL_PATH):
-    with open(MODEL_PATH, "rb") as f:
-        model = pickle.load(f)
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            model = pickle.load(f)
+        print("Model successfully loaded!", file=sys.stderr)
+    except Exception as e:
+        model_error = f"Failed to load model pickle: {str(e)}"
+        print(f"CRITICAL ERROR: {model_error}", file=sys.stderr)
+else:
+    model_error = f"Model file '{MODEL_PATH}' was not found in the root directory."
+    print(f"WARNING: {model_error}", file=sys.stderr)
 
-# Embedded HTML + CSS Template
+# HTML UI Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -33,6 +42,7 @@ HTML_TEMPLATE = """
             --text-muted: #94a3b8;
             --border: #334155;
             --success: #10b981;
+            --error: #ef4444;
         }
 
         * {
@@ -135,8 +145,9 @@ HTML_TEMPLATE = """
             background: var(--accent-hover);
         }
 
-        .btn-submit:active {
-            transform: scale(0.99);
+        .btn-submit:disabled {
+            background: #475569;
+            cursor: not-allowed;
         }
 
         .result-box {
@@ -161,13 +172,14 @@ HTML_TEMPLATE = """
         }
 
         .error-box {
-            margin-top: 2rem;
+            margin-bottom: 1.5rem;
             padding: 1rem;
             background: rgba(239, 68, 68, 0.1);
-            border: 1px solid #ef4444;
+            border: 1px solid var(--error);
             color: #fca5a5;
             border-radius: 8px;
             text-align: center;
+            font-size: 0.9rem;
         }
     </style>
 </head>
@@ -176,8 +188,14 @@ HTML_TEMPLATE = """
 <div class="container">
     <div class="header">
         <h1>Superstore Sales Predictor</h1>
-        <p>Enter order details below to estimate expected sales/metrics</p>
+        <p>Enter order details below to estimate model predictions</p>
     </div>
+
+    {% if model_error %}
+    <div class="error-box">
+        <strong>Warning:</strong> {{ model_error }}
+    </div>
+    {% endif %}
 
     {% if error %}
     <div class="error-box">
@@ -187,43 +205,43 @@ HTML_TEMPLATE = """
 
     <form method="POST" action="/predict" class="grid-form">
         <div class="form-group">
-            <label>Ship Mode (Encoded)</label>
+            <label>Ship Mode</label>
             <input type="number" step="any" name="Ship Mode" placeholder="e.g. 0" required>
         </div>
         <div class="form-group">
-            <label>Customer Name (Encoded)</label>
+            <label>Customer Name</label>
             <input type="number" step="any" name="Customer Name" placeholder="e.g. 12" required>
         </div>
         <div class="form-group">
-            <label>Segment (Encoded)</label>
+            <label>Segment</label>
             <input type="number" step="any" name="Segment" placeholder="e.g. 1" required>
         </div>
         <div class="form-group">
-            <label>Country (Encoded)</label>
+            <label>Country</label>
             <input type="number" step="any" name="Country" placeholder="e.g. 0" required>
         </div>
         <div class="form-group">
-            <label>City (Encoded)</label>
+            <label>City</label>
             <input type="number" step="any" name="City" placeholder="e.g. 45" required>
         </div>
         <div class="form-group">
-            <label>State (Encoded)</label>
+            <label>State</label>
             <input type="number" step="any" name="State" placeholder="e.g. 10" required>
         </div>
         <div class="form-group">
-            <label>Region (Encoded)</label>
+            <label>Region</label>
             <input type="number" step="any" name="Region" placeholder="e.g. 2" required>
         </div>
         <div class="form-group">
-            <label>Category (Encoded)</label>
+            <label>Category</label>
             <input type="number" step="any" name="Category" placeholder="e.g. 1" required>
         </div>
         <div class="form-group">
-            <label>Sub-Category (Encoded)</label>
+            <label>Sub-Category</label>
             <input type="number" step="any" name="Sub-Category" placeholder="e.g. 5" required>
         </div>
         <div class="form-group">
-            <label>Product Name (Encoded)</label>
+            <label>Product Name</label>
             <input type="number" step="any" name="Product Name" placeholder="e.g. 102" required>
         </div>
         <div class="form-group">
@@ -239,7 +257,9 @@ HTML_TEMPLATE = """
             <input type="number" step="0.01" name="Profit" placeholder="e.g. 41.91" required>
         </div>
 
-        <button type="submit" class="btn-submit">Predict Value</button>
+        <button type="submit" class="btn-submit" {% if model_error and not model %}disabled{% endif %}>
+            Predict Value
+        </button>
     </form>
 
     {% if prediction %}
@@ -256,15 +276,15 @@ HTML_TEMPLATE = """
 
 @app.route("/", methods=["GET"])
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template_string(HTML_TEMPLATE, model_error=model_error)
 
 @app.route("/predict", methods=["POST"])
 def predict():
     if model is None:
-        return render_template_string(HTML_TEMPLATE, error="Model pickle file not found on server.")
+        err = model_error or "Model pickle file is not available."
+        return render_template_string(HTML_TEMPLATE, error=err, model_error=model_error)
     
     try:
-        # Extract features in the exact order expected by the model
         feature_order = [
             "Ship Mode", "Customer Name", "Segment", "Country", 
             "City", "State", "Region", "Category", 
@@ -272,17 +292,14 @@ def predict():
         ]
         
         input_data = [float(request.form.get(f, 0)) for f in feature_order]
-        
-        # Convert to DataFrame matching feature names
         input_df = pd.DataFrame([input_data], columns=feature_order)
         
-        # Predict
         prediction_value = model.predict(input_df)[0]
         formatted_prediction = f"{prediction_value:,.2f}"
         
-        return render_template_string(HTML_TEMPLATE, prediction=formatted_prediction)
+        return render_template_string(HTML_TEMPLATE, prediction=formatted_prediction, model_error=model_error)
     except Exception as e:
-        return render_template_string(HTML_TEMPLATE, error=f"Prediction Error: {str(e)}")
+        return render_template_string(HTML_TEMPLATE, error=f"Prediction Error: {str(e)}", model_error=model_error)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
