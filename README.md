@@ -1,3 +1,3 @@
 # Supperstore_Sale_Prediction
 
-https://supperstore-sale-prediction-coud.vercel.app/predict
+website not working link = https://supperstoresaleprediction.vercel.app/predict
